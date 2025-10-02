@@ -62,14 +62,26 @@ impl KeyboardHandler for WgpuLayerShellState {
         handle_key_press(event, false, self.egui_state.input());
     }
 
+    fn repeat_key(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        keyboard: &wayland_client::protocol::wl_keyboard::WlKeyboard,
+        serial: u32,
+        event: KeyEvent,
+    ) {
+        todo!()
+    }
+
     fn update_modifiers(
         &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _keyboard: &wayland_client::protocol::wl_keyboard::WlKeyboard,
-        _serial: u32,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        keyboard: &wayland_client::protocol::wl_keyboard::WlKeyboard,
+        serial: u32,
         modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
-        _layout: u32,
+        raw_modifiers: smithay_client_toolkit::seat::keyboard::RawModifiers,
+        layout: u32,
     ) {
         self.egui_state.input().modifiers = Modifiers {
             alt: modifiers.alt,

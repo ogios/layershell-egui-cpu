@@ -15,7 +15,7 @@ fn main() -> layer_shell_wgpu_egui::Result {
         options,
         Box::new(|egui_context| {
             // This gives us image support:
-            egui_extras::install_image_loaders(&egui_context);
+            egui_extras::install_image_loaders(egui_context);
             Ok(Box::<MyApp>::default())
         }),
     )

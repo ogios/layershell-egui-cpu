@@ -6,11 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use egui_wgpu::ScreenDescriptor;
+use egui_software_backend::BufferMutRef;
 use keyboard_handler::handle_key_press;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
+    delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::{calloop::LoopHandle, calloop_wayland_source::WaylandSource},
     registry::{ProvidesRegistryState, RegistryState},
@@ -23,6 +24,7 @@ use smithay_client_toolkit::{
         },
         WaylandSurface,
     },
+    shm::{slot::SlotPool, Shm, ShmHandler},
 };
 use wayland_client::{
     globals::registry_queue_init,
@@ -32,7 +34,6 @@ use wayland_client::{
 
 use crate::{
     egui_state::{self},
-    wgpu_state::WgpuState,
     App,
 };
 
@@ -63,9 +64,11 @@ pub(crate) struct WgpuLayerShellState {
 
     pub(crate) exit: bool,
 
-    pub(crate) wgpu_state: WgpuState,
     pub(crate) egui_state: egui_state::State,
     pub(crate) draw_request: Arc<RwLock<Option<Instant>>>,
+
+    pub(crate) shm: Shm,
+    pub(crate) pool: SlotPool,
 }
 
 impl WgpuLayerShellState {
@@ -101,8 +104,8 @@ impl WgpuLayerShellState {
         layer_surface.set_size(options.width, options.height);
         layer_surface.commit();
 
-        let wgpu_state = WgpuState::new(&connection.backend(), layer_surface.wl_surface())
-            .expect("Could not create wgpu state");
+        let shm = Shm::bind(&global_list, &queue_handle).expect("wl_shm not available");
+        let pool = SlotPool::new(256 * 256 * 4, &shm).expect("Failed to create slot pool");
 
         let egui_context = egui::Context::default();
 
@@ -116,13 +119,7 @@ impl WgpuLayerShellState {
             }
         });
 
-        let egui_state = egui_state::State::new(
-            egui_context,
-            &wgpu_state.device,
-            wgpu_state.surface_configuration.format,
-            None,
-            1,
-        );
+        let egui_state = egui_state::State::new(egui_context);
 
         WgpuLayerShellState {
             loop_handle: loop_handle.clone(),
@@ -142,8 +139,10 @@ impl WgpuLayerShellState {
             queue_handle,
 
             egui_state,
-            wgpu_state,
             draw_request,
+
+            shm,
+            pool,
         }
     }
 
@@ -185,45 +184,39 @@ impl WgpuLayerShellState {
             .egui_state
             .process_events(|ctx| application.update(ctx));
 
-        let surface_texture = self
-            .wgpu_state
-            .surface
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture");
+        let (w, h) = self.egui_state.get_size();
+        let (buffer, canvas) = self
+            .pool
+            .create_buffer(
+                w,
+                h,
+                w * 4,
+                wayland_client::protocol::wl_shm::Format::Argb8888,
+            )
+            .unwrap();
+        buffer
+            .attach_to(self.layer.wl_surface())
+            .expect("buffer attach");
 
-        let surface_view = surface_texture
-            .texture
-            .create_view(&egui_wgpu::wgpu::TextureViewDescriptor::default());
+        // clear old buffer*
+        canvas.fill(0);
 
-        let mut encoder = self
-            .wgpu_state
-            .device
-            .create_command_encoder(&egui_wgpu::wgpu::CommandEncoderDescriptor { label: None });
+        let buffer_ref =
+            &mut BufferMutRef::new(bytemuck::cast_slice_mut(canvas), w as usize, h as usize);
 
-        let screen_descriptor = ScreenDescriptor {
-            size_in_pixels: [
-                self.wgpu_state.surface_configuration.width,
-                self.wgpu_state.surface_configuration.height,
-            ],
-            pixels_per_point: 1.0, // todo: figure out where to get that from
-        };
+        self.egui_state.draw(full_output, buffer_ref);
 
-        self.egui_state.draw(
-            &self.wgpu_state.device,
-            &self.wgpu_state.queue,
-            &mut encoder,
-            &surface_view,
-            screen_descriptor,
-            full_output.shapes,
-            full_output.textures_delta,
-        );
-        self.wgpu_state.queue.submit(Some(encoder.finish()));
+        // attach content
+        self.layer.wl_surface().damage_buffer(0, 0, w, h);
+
+        // set size
+        self.layer.set_size(w as u32, h as u32);
 
         self.layer
             .wl_surface()
             .frame(&self.queue_handle, self.layer.wl_surface().clone());
 
-        surface_texture.present();
+        self.layer.wl_surface().commit();
     }
 }
 
@@ -329,14 +322,15 @@ impl LayerShellHandler for WgpuLayerShellState {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        println!(
+            "LayerShell configure: size=({}, {})",
+            configure.new_size.0, configure.new_size.1
+        );
         if !self.is_configured {
             self.is_configured = true;
             self.has_frame_callback = true;
             *self.draw_request.write().unwrap() = Some(Instant::now());
         }
-
-        self.wgpu_state
-            .resize(configure.new_size.0, configure.new_size.1);
 
         self.egui_state
             .set_size(configure.new_size.0, configure.new_size.1);
@@ -408,4 +402,11 @@ impl SeatHandler for WgpuLayerShellState {
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+delegate_shm!(WgpuLayerShellState);
+impl ShmHandler for WgpuLayerShellState {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
 }
