@@ -1,9 +1,11 @@
-# Wayland layer_shell backend for egui with WGPU renderer
+# Wayland layer_shell backend for egui with CPU renderer
 
-This is an **early and work in progress** repository working on a layer shell backend for egui using wgpu for rendering and smithay client toolkit for the wayland client.
+This is an **early and work in progress** repository working on a layer shell backend for egui using cpu for rendering and smithay client toolkit for the wayland client.
 
 > [!WARNING]
 > Do not use this yet, the rendering part works, but plenty of things are not yet implemented.
+>
+> But you can try it out and give feedback.
 
 ## todo
 
